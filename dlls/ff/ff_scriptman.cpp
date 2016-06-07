@@ -9,6 +9,7 @@
 #include "ff_utils.h"
 #include "ff_item_flag.h"
 #include "triggers.h"
+#include "stringregistry.h"
 
 // engine
 #include "filesystem.h"
@@ -27,6 +28,7 @@ extern "C"
 
 // luabind
 #include "luabind/luabind.hpp"
+#include "luabind/class_info.hpp"
 #include "luabind/object.hpp"
 #include "luabind/iterator_policy.hpp"
 
@@ -70,6 +72,10 @@ using namespace luabind;
 // global script manager instance
 CFFScriptManager _scriptman;
 
+CStringRegistry	g_HudElementStrings;
+int nextHudElementIndex;
+
+/////////////////////////////////////////////////////////////////////////////
 CFFScriptManager::CFFScriptManager()
 {
 	L = NULL;
@@ -171,6 +177,13 @@ void CFFScriptManager::SetupEnvironmentForFF()
 
 	// initialize luabind
 	luabind::open(L);
+
+	// add class_info to the environment
+	luabind::bind_class_info(L);
+
+	// remove luabind's 'class' implementation because it seems to be broken
+	lua_pushnil(L);
+	lua_setglobal(L, "class");
 
 	// initialize game-specific library
 	CFFLuaLib::Init(L);
@@ -285,8 +298,29 @@ bool CFFScriptManager::LoadFile(const char *filename)
 	return true;
 }
 
+// ----------- HUD ELEMENTS ----------
+int CFFScriptManager::GetOrAddHudElementIndex(const char* szElementName)
+{
+	if(!szElementName)
+		return -1; // throw?
+
+	int existingIndex = g_HudElementStrings.GetStringID( szElementName ); // Gets key for name
+	if ( existingIndex < 0 )
+	{
+		nextHudElementIndex++;
+		g_HudElementStrings.AddString( szElementName, nextHudElementIndex ); // Inserts
+		return nextHudElementIndex;
+	}
+
+	return existingIndex;
+}
+
+
 void CFFScriptManager::LevelInit(const char* szMapName)
 {
+	g_HudElementStrings.ClearStrings();
+	nextHudElementIndex = 0;
+
 	const char* default_luafile = "maps/default.lua";
 	VPROF_BUDGET("CFFScriptManager::LevelInit", VPROF_BUDGETGROUP_FF_LUA);
 

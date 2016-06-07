@@ -139,7 +139,11 @@ int g_iLimbs[CLASS_CIVILIAN + 1][5] = { { 0 } };
 ConVar ffdev_gibdamage("ffdev_gibdamage", "50", FCVAR_FF_FFDEV_REPLICATED, "If a players health is -(ffdev_gibdamage's value) or less after death, then they will gib instead of ragdoll");
 #define FFDEV_GIBDAMAGE ffdev_gibdamage.GetFloat()
 
+ConVar ffdev_gibdamage_explosions("ffdev_gibdamage_explosions", "30", FCVAR_FF_FFDEV_REPLICATED, "If a players health is -(ffdev_gibdamage's value) or less after death, then they will gib instead of ragdoll");
+#define FFDEV_GIBDAMAGE_EXPLOSIONS ffdev_gibdamage_explosions.GetFloat()
+
 extern ConVar sv_maxspeed;
+extern ConVar mp_friendlyfire_armorstrip;
 
 //ConVar ffdev_spy_cloakfadespeed( "ffdev_spy_cloaktime", "1", FCVAR_REPLICATED, "Time it takes to cloak (fade out to cloak)" );
 #define FFDEV_SPY_CLOAKFADESPEED 1.0f
@@ -339,6 +343,7 @@ BEGIN_SEND_TABLE_NOBASE( CFFPlayer, DT_FFPlayerObserver )
 	SendPropFloat(SENDINFO(m_flNextClassSpecificSkill)),
 	SendPropFloat(SENDINFO(m_flTrueAimTime)),
 	SendPropFloat(SENDINFO(m_flHitTime)),
+	SendPropInt(SENDINFO(m_nButtons)),
 END_SEND_TABLE()
 
 BEGIN_SEND_TABLE_NOBASE( CFFPlayer, DT_FFLocalPlayerExclusive )
@@ -437,6 +442,7 @@ IMPLEMENT_SERVERCLASS_ST( CFFPlayer, DT_FFPlayer )
 	SendPropBool( SENDINFO( m_bConcussed ) ),
 	SendPropBool( SENDINFO( m_bTranqed ) ),
 	SendPropBool( SENDINFO( m_bSliding ) ),
+	SendPropBool( SENDINFO( m_bIsRampsliding ) ),
 	SendPropEHandle( SENDINFO( m_hActiveSlowfield ) ),
 	SendPropBool( SENDINFO( m_bInfected ) ),
 	SendPropBool( SENDINFO( m_bImmune ) ),
@@ -575,6 +581,8 @@ CFFPlayer::CFFPlayer()
 	m_flSlidingTime = 0;		// Not sliding on creation
 	m_bSliding = false;
 
+	m_bIsRampsliding = false;
+
 	m_bGassed = false;
 	m_hGasser = NULL;
 	m_flNextGas = 0;
@@ -587,7 +595,7 @@ CFFPlayer::CFFPlayer()
 
 	SetObjectiveEntity(NULL);
 
-	m_pBuildLastWeapon = NULL;
+	m_pLastWeapon = NULL;
 
 	m_flJumpTime = m_flFallTime = 0;
 
@@ -1292,6 +1300,7 @@ void CFFPlayer::PreForceSpawn( void )
 			GetActiveFFWeapon()->Holster();
 
 		SetActiveWeapon( NULL );
+		m_pLastWeapon = NULL;
 
 		// Remove all weapons
 		for( int i = 0; i < MAX_WEAPONS; i++ )
@@ -1576,7 +1585,7 @@ void CFFPlayer::Spawn( void )
 		CBaseCombatWeapon *pSpawnWeapon = Weapon_OwnsThisType(weaponSpawn);
 		if(pSpawnWpn && pSpawnWeapon)
 		{
-			if(Weapon_Switch(pSpawnWeapon))
+			if(pSpawnWeapon == GetActiveWeapon() || Weapon_Switch(pSpawnWeapon))
 				break;
 		}
 
@@ -1589,6 +1598,10 @@ void CFFPlayer::Spawn( void )
 
 		break;
 	}
+
+	//Set the last weapon to null on spawn -GreenMushy
+	m_pLastWeapon = NULL;
+
 	//////////////////////////////////////////////////////////////////////////
 	
 	// Make sure we don't go running around during the intermission
@@ -1611,8 +1624,9 @@ void CFFPlayer::Spawn( void )
 void CFFPlayer::SetupClassVariables()
 {
 #ifndef FF_BETA_TEST_COMPILE
-	// Reset Engineer stuff
-	m_pBuildLastWeapon = NULL;
+
+	//Last weapon used
+	m_pLastWeapon = NULL;
 
 	//m_hSaveMe = NULL;
 	m_flSaveMeTime = 0.0f;
@@ -2172,25 +2186,23 @@ void CFFPlayer::CreateRagdollEntity(const CTakeDamageInfo *info)
 		pRagdoll->SetEffectEntity( pRagdollFlame );
 
 		//set the same lifetime the same as the ragdoll itself!
-		pRagdollFlame->SetLifetime( 15.0f );
+		pRagdollFlame->SetLifetime( 5.0f );
 	}
 
 	// not everything that gets here has an info
 	// when we change class we dont have an inflictor either
+	pRagdoll->m_vecRagdollVelocity = GetAbsVelocity();
 	if ( info ) 
 	{
-		pRagdoll->m_vecRagdollVelocity = GetAbsVelocity();
 		pRagdoll->m_vecForce = info->GetDamageForce();
 	}
 	else
 	{
-		//use whatever the players velocity was
-		pRagdoll->m_vecRagdollVelocity = GetAbsVelocity();
 		pRagdoll->m_vecForce = Vector(0, 0, 0);
 	}
 
 	// remove the ragdoll after a time
-	pRagdoll->SetNextThink( gpGlobals->curtime + 15.0f );
+	pRagdoll->SetNextThink( gpGlobals->curtime + 5.0f );
 	pRagdoll->SetThink( &CBaseEntity::SUB_Remove );
 
 	// ragdolls will be removed on round restart automatically
@@ -3323,8 +3335,8 @@ void CFFPlayer::PreBuildGenericThink( void )
 		}
 
 		// See if the user has appropriate ammo
-		if( ( (m_iWantBuild == FF_BUILD_DISPENSER) && (GetAmmoCount( AMMO_CELLS ) < 100) ) ||
-			( (m_iWantBuild == FF_BUILD_SENTRYGUN) && (GetAmmoCount( AMMO_CELLS ) < 130) ) ||
+		if( ( (m_iWantBuild == FF_BUILD_DISPENSER) && (GetAmmoCount( AMMO_CELLS ) < FF_BUILDCOST_DISPENSER) ) ||
+			( (m_iWantBuild == FF_BUILD_SENTRYGUN) && (GetAmmoCount( AMMO_CELLS ) < FF_BUILDCOST_SENTRYGUN) ) ||
 			( (m_iWantBuild == FF_BUILD_DETPACK) && (GetAmmoCount( AMMO_DETPACK ) < 1 )) ||
 			( (m_iWantBuild == FF_BUILD_MANCANNON) && (GetAmmoCount( AMMO_MANCANNON ) < 1 )) )
 		{
@@ -3399,7 +3411,7 @@ void CFFPlayer::PreBuildGenericThink( void )
 					// Bug #0001558: exploit to get instant lvl2 SG
 					// Moved code to remove cells from CFFDispenser::GoLive() to here.  
 					// Leaving the remove armour code in that function as you can't fiddle with armour vals via this exploit -> Defrag
-					RemoveAmmo( 100, AMMO_CELLS );
+					RemoveAmmo( FF_BUILDCOST_DISPENSER, AMMO_CELLS );
 
 					Omnibot::Notify_DispenserBuilding(this, pDispenser);
 					
@@ -3449,7 +3461,7 @@ void CFFPlayer::PreBuildGenericThink( void )
 
 					// Bug #0001558: exploit to get instant lvl2 SG
 					// Moved code to remove cells from CFFSentryGun::GoLive() to here -> Defrag
-					RemoveAmmo( 130, AMMO_CELLS );
+					RemoveAmmo( FF_BUILDCOST_SENTRYGUN, AMMO_CELLS );
 
 					Omnibot::Notify_SentryBuilding(this, pSentryGun);
 
@@ -3542,10 +3554,10 @@ void CFFPlayer::PreBuildGenericThink( void )
 				switch( m_iCurBuild )
 				{
 				case FF_BUILD_DISPENSER:
-					GiveAmmo( 100, AMMO_CELLS, true );
+					GiveAmmo( FF_BUILDCOST_DISPENSER, AMMO_CELLS, true );
 					break;
 				case FF_BUILD_SENTRYGUN:
-					GiveAmmo( 130, AMMO_CELLS, true );
+					GiveAmmo( FF_BUILDCOST_SENTRYGUN, AMMO_CELLS, true );
 					break;
 				default:
 					break;
@@ -3659,7 +3671,7 @@ void CFFPlayer::PostBuildGenericThink( void )
 					GetManCannon()->GoLive();
 
 					// TODO: Change to something
-					switchToWeapon = FF_WEAPON_NAILGUN;
+					switchToWeapon = FF_WEAPON_JUMPGUN;
 					IGameEvent *pEvent = gameeventmanager->CreateEvent( "build_mancannon" );
 					if( pEvent )
 					{
@@ -3721,12 +3733,6 @@ void CFFPlayer::PostBuildGenericThink( void )
 		// Give a message for now
 		Warning( "CFFPlayer::PostBuildGenericThink - ERROR!!!\n" );
 	}
-
-	// Deploy weapon
-	//if( GetActiveWeapon()->GetLastWeapon() )
-	//	GetActiveWeapon()->GetLastWeapon()->Deploy();
-	//if( m_pBuildLastWeapon )
-	//	m_pBuildLastWeapon->Deploy();
 }
 
 /**
@@ -5414,9 +5420,15 @@ int CFFPlayer::OnTakeDamage(const CTakeDamageInfo &inputInfo)
 		//float flNew = info.GetDamage() * flRatio;
 		float fFullDamage = info.GetDamage();
 
-		float fArmorDamage = fFullDamage * (((float)m_iArmorType) / 10.0f); //AfterShock: changing int to float e.g. armor type 8 means 0.8 i.e. 80% damage absorbed by armor
+		float fArmorDamage = fFullDamage * GetArmorAbsorption();
 		float fHealthDamage = fFullDamage - fArmorDamage;
 		float fArmorLeft = (float) m_iArmor;
+		bool shouldArmorstrip = mp_friendlyfire_armorstrip.GetFloat() > 0 && g_pGameRules->PlayerRelationship( this, info.GetAttacker() ) == GR_TEAMMATE;
+
+		if (shouldArmorstrip)
+		{
+			fArmorDamage *= mp_friendlyfire_armorstrip.GetFloat();
+		}
 
 		// if the armor damage is greater than the amount of armor remaining, apply the excess straight to health
 		if(fArmorDamage > fArmorLeft)
@@ -5428,6 +5440,11 @@ int CFFPlayer::OnTakeDamage(const CTakeDamageInfo &inputInfo)
 		else
 		{
 			m_iArmor -= (int) fArmorDamage;
+		}
+
+		if (shouldArmorstrip)
+		{
+			fHealthDamage = 0;
 		}
 
 		// Set armor lost for hud "damage" message
@@ -5849,6 +5866,9 @@ void CFFPlayer::OnDamagedByExplosion( const CTakeDamageInfo &info )
 //-----------------------------------------------------------------------------
 bool CFFPlayer::ShouldGib( const CTakeDamageInfo &info )
 {
+	if (info.GetDamageType() & DMG_BLAST)
+		return (GetHealth() <= -FFDEV_GIBDAMAGE_EXPLOSIONS);
+
 	return (GetHealth() <= -FFDEV_GIBDAMAGE);
 }
 
@@ -6084,7 +6104,6 @@ void CFFPlayer::UnGas( void )
 void CFFPlayer::StartSliding( float flDuration, float flIconDuration )
 {
 	m_bSliding = true;
-	SetFriction( 0.0f );
 
 	if(flDuration != -1)
 		m_flSlidingTime = gpGlobals->curtime + flDuration;
@@ -6113,7 +6132,6 @@ void CFFPlayer::StopSliding( void )
 {
 	m_bSliding = false;
 	m_flSlidingTime = 0;
-	SetFriction( 1.0f );
 
 	CSingleUserRecipientFilter user( ( CBasePlayer * )this );
 	user.MakeReliable();
@@ -7619,7 +7637,7 @@ Vector CFFPlayer::BodyTarget(const Vector &posSrc, bool bNoisy)
 
 	if (bNoisy)
 	{
-		return GetAbsOrigin() + (Vector(0, 0, 28) * random->RandomFloat(0.5f, 1.1f));
+		return GetAbsOrigin() + (GetViewOffset() * random->RandomFloat(0.5f, 1.1f));
 	}
 	else
 	{

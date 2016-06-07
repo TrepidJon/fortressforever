@@ -35,7 +35,7 @@
 
 using namespace vgui;
 
-static ConVar hud_speedometer( "hud_speedometer", "0", FCVAR_ARCHIVE, "Toggle speedometer. Disclaimer: We are not responsible if you get a ticket.");
+static ConVar hud_speedometer( "hud_speedometer", "1", FCVAR_ARCHIVE, "Toggle speedometer. Disclaimer: We are not responsible if you get a ticket.");
 static ConVar hud_speedometer_avg( "hud_speedometer_avg", "0", FCVAR_ARCHIVE, "Toggle average speedometer.");
 // ELMO *** 
 static ConVar hud_speedometer_color( "hud_speedometer_color", "2", FCVAR_ARCHIVE, "0=No color, 1=Stepped Color, 2=Fading Color (RED > hardcap :: ORANGE > softcap :: GREEN > run speed :: WHITE < run speed)", true, 0.0f, true, 2.0f);
@@ -53,11 +53,8 @@ public:
 
 	CHudSpeedometer( const char *pElementName ) : vgui::FFPanel( NULL, "HudSpeedometer" ), CHudElement( pElementName )
 	{
-		// Set our parent window
 		SetParent( g_pClientMode->GetViewport() );
-
-		// Hide when player is dead
-		SetHiddenBits( HIDEHUD_PLAYERDEAD );
+		SetHiddenBits( HIDEHUD_PLAYERDEAD | HIDEHUD_UNASSIGNED );
 	}
 
 	virtual ~CHudSpeedometer( void )
@@ -127,12 +124,12 @@ void CHudSpeedometer::OnThink()
 	if (!hud_speedometer.GetBool() && !hud_speedometer_avg.GetBool())
 		return;
 
-	C_FFPlayer *pPlayer = C_FFPlayer::GetLocalFFPlayerOrObserverTarget();
+	C_FFPlayer *pPlayer = C_FFPlayer::GetLocalFFPlayerOrAnyObserverTarget();
 
 	if(!pPlayer)
 		return;
 
-	bool isSpectating = pPlayer != C_FFPlayer::GetLocalFFPlayer();
+	bool isSpectating = FF_IsPlayerSpec( C_FFPlayer::GetLocalFFPlayer() );
 
 	//don't update so fast.
 	if(m_flNextUpdate < gpGlobals->curtime)
@@ -162,12 +159,12 @@ void CHudSpeedometer::Paint()
 	if (!hud_speedometer.GetBool() && !hud_speedometer_avg.GetBool())
 		return;
 
-	C_FFPlayer *pPlayer = C_FFPlayer::GetLocalFFPlayerOrObserverTarget();
+	C_FFPlayer *pPlayer = C_FFPlayer::GetLocalFFPlayerOrAnyObserverTarget();
 
 	if(!pPlayer)
 		return;
 
-	bool isSpectating = pPlayer != C_FFPlayer::GetLocalFFPlayer();
+	bool isSpectating = FF_IsPlayerSpec( C_FFPlayer::GetLocalFFPlayer() );
 	float maxVelocity = pPlayer->MaxSpeed();
 	Color speedColor;
 

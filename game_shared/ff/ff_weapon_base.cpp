@@ -54,6 +54,8 @@ const char *s_WeaponAliasInfo[] =
 
 	"railgun", 			// FF_WEAPON_RAILGUN
 
+	"jumpgun",			// FF_WEAPON_JUMPGUN
+
 	"tranq",		 	// FF_WEAPON_TRANQUILISER
 
 	"assaultcannon", 	// FF_WEAPON_ASSAULTCANNON
@@ -231,10 +233,8 @@ const char *CFFWeaponBase::GetWorldModel( void ) const
 
 		if(pWeapon == this)
 		{
-			if(pFFPlayer->m_DisguisedWeapons[iClass].szWeaponModel[iSlot][0] != NULL)
-				return pFFPlayer->m_DisguisedWeapons[iClass].szWeaponModel[iSlot];
-			else if (pFFPlayer->GetDisguisedClass() == CLASS_CIVILIAN && pFFPlayer->m_DisguisedWeapons[CLASS_CIVILIAN].szWeaponModel[0] != NULL)
-				return pFFPlayer->m_DisguisedWeapons[CLASS_CIVILIAN].szWeaponModel[0]; // always use umbrella
+			if(pFFPlayer->m_DisguisedWeapons[iClass][iSlot].szWeaponModel[0] != NULL)
+				return pFFPlayer->m_DisguisedWeapons[iClass][iSlot].szWeaponModel;
 		}
 	}
 #endif

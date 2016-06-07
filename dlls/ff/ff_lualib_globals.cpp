@@ -158,10 +158,22 @@ namespace FFLib
 		return IsOfClass(pEntity, CLASS_SENTRYGUN);
 	}
 
-	// is entity a dispenser
+	// is entity a detpack
 	bool IsDetpack( CBaseEntity *pEntity )
 	{
 		return IsOfClass( pEntity, CLASS_DETPACK );
+	}
+
+	// is entity a jump pad
+	bool IsJumpPad( CBaseEntity *pEntity )
+	{
+		return IsOfClass( pEntity, CLASS_MANCANNON );
+	}
+
+	// is entity a buildable
+	bool IsBuildable( CBaseEntity *pEntity )
+	{
+		return IsDispenser(pEntity) || IsSentrygun(pEntity) || IsDetpack(pEntity) || IsJumpPad(pEntity);
 	}
 
 	// is the entity a grenade
@@ -179,6 +191,18 @@ namespace FFLib
 				IsOfClass(pEntity, CLASS_GREN_GAS) ||
 				IsOfClass(pEntity, CLASS_GREN_CONC)
 				*/
+	}
+
+	// is the entity a projectile
+	bool IsProjectile(CBaseEntity* pEntity)
+	{
+		return dynamic_cast< CFFProjectileBase * >( pEntity ) != NULL;
+	}
+
+	// is entity an infoscript
+	bool IsInfoScript( CBaseEntity *pEntity )
+	{
+		return IsOfClass( pEntity, CLASS_INFOSCRIPT );
 	}
 
 	// is the entity a miniturret
@@ -505,6 +529,19 @@ namespace FFLib
 		Msg( "\n" );
 	}
 
+	void ServerCommand(const char* command)
+	{
+		if ( !command[0] )
+			return;
+
+		// deny any string that includes rcon_password
+		// can't just check for the start because ' rcon_password blah' and 'dummy; rcon_password blah' are also valid
+		if ( Q_stristr(command, "rcon_password") )
+			return;
+
+		engine->ServerCommand( UTIL_VarArgs( "%s\n", command ) );
+	}
+
 	luabind::adl::object IncludeScript(const char* script)
 	{
 		lua_State *L = _scriptman.GetLuaState();
@@ -527,9 +564,9 @@ namespace FFLib
 
 	CFFTeam* GetTeam(int teamId)
 	{
-		if( teamId < TEAM_BLUE )
+		if( teamId <= TEAM_INVALID )
 			return NULL;
-		if( teamId > TEAM_GREEN )
+		if( teamId >= TEAM_COUNT )
 			return NULL;
 
 		return dynamic_cast<CFFTeam*>(g_Teams[teamId]);
@@ -560,11 +597,55 @@ namespace FFLib
 		return luatblEntities;
 	}
 
+	luabind::adl::object GetEntitiesInSphere(const Vector& vecOrigin, float flRadius, bool bIgnoreWalls)
+	{
+		luabind::adl::object luatblEntities = luabind::newtable(_scriptman.GetLuaState());
+
+		int iTableKey = 1;
+		CBaseEntity *pEntity = NULL;
+		for( CEntitySphereQuery sphere( vecOrigin, flRadius ); ( pEntity = sphere.GetCurrentEntity() ) != NULL; sphere.NextEntity() )
+		{
+			if( !pEntity )
+				continue;
+
+			if (!bIgnoreWalls)
+			{
+				trace_t tr;
+				UTIL_TraceLine( vecOrigin, pEntity->GetAbsOrigin(), MASK_SOLID, NULL, COLLISION_GROUP_NONE, &tr );
+
+				if( FF_TraceHitWorld( &tr ) )
+					continue;
+			}
+
+			luatblEntities[iTableKey++] = luabind::adl::object(_scriptman.GetLuaState(), pEntity);
+		}
+
+		return luatblEntities;
+	}
+
 	CFFPlayer* GetPlayer(CBaseEntity *pEntity)
 	{
 		// ToFFPlayer checks for NULL & IsPlayer()
 		// so this is safe to do.
 		return ToFFPlayer( pEntity );
+	}
+
+	luabind::adl::object GetPlayers()
+	{
+		luabind::adl::object luatblPlayers = luabind::newtable(_scriptman.GetLuaState());
+
+		int iTableKey = 1;
+		for(int i = 1 ; i <= gpGlobals->maxClients; i++)
+		{
+			CFFPlayer* pPlayer = GetPlayer(UTIL_EntityByIndex(i));
+
+			if( !pPlayer )
+				continue;
+
+			luatblPlayers[iTableKey++] = luabind::adl::object(_scriptman.GetLuaState(), pPlayer);
+		}
+
+		return luatblPlayers;
 	}
 
 	CFFGrenadeBase *GetGrenade( int ent_id )
@@ -578,6 +659,11 @@ namespace FFLib
 			return NULL;
 
 		return dynamic_cast< CFFGrenadeBase * >( pEnt );
+	}
+
+	bool IsEntity( const luabind::adl::object &obj )
+	{
+		return obj.is_valid() && luabind::type(obj) == LUA_TUSERDATA && luabind::object_cast_nothrow< CBaseEntity * >( obj ) != NULL;
 	}
 
 	bool IsPlayer( CBaseEntity *pEntity )
@@ -645,6 +731,17 @@ namespace FFLib
 			return NULL;
 
 		return dynamic_cast< CFFGrenadeBase * >( pEntity );
+	}
+
+	CFFProjectileBase *CastToProjectile( CBaseEntity *pEntity )
+	{
+		if( !pEntity )
+			return NULL;
+
+		if( !IsProjectile( pEntity ) )
+			return NULL;
+
+		return dynamic_cast< CFFProjectileBase * >( pEntity );
 	}
 
 	CBeam* CastToBeam(CBaseEntity* pEntity)
@@ -722,6 +819,28 @@ namespace FFLib
 			return NULL;
 
 		return dynamic_cast< CFFDetpack * >( pEntity );
+	}
+
+	CFFManCannon *CastToJumpPad( CBaseEntity *pEntity )
+	{
+		if( !pEntity )
+			return NULL;
+
+		if( !IsJumpPad( pEntity ) )
+			return NULL;
+
+		return dynamic_cast< CFFManCannon * >( pEntity );
+	}
+
+	CFFBuildableObject *CastToBuildable( CBaseEntity *pEntity )
+	{
+		if( !pEntity )
+			return NULL;
+
+		if( !IsBuildable( pEntity ) )
+			return NULL;
+
+		return dynamic_cast< CFFBuildableObject * >( pEntity );
 	}
 
 	bool AreTeamsAllied(CTeam* pTeam1, CTeam* pTeam2)
@@ -1458,6 +1577,10 @@ namespace FFLib
 		if( !Q_stricmp( pszConvarName, "sv_cheats" ) )
 			return;
 
+		// protect rcon_password
+		if ( Q_stricmp( pszConvarName, "rcon_password" ) == 0 )
+			return;
+
 		if( !cvar )
 			return;
 
@@ -1481,6 +1604,10 @@ namespace FFLib
 
 		// Don't allow sv_cheats setting
 		if( !Q_stricmp( pszConvarName, "sv_cheats" ) )
+			return;
+
+		// protect rcon_password
+		if ( Q_stricmp( pszConvarName, "rcon_password" ) == 0 )
 			return;
 
 		if( !cvar )
@@ -3000,6 +3127,9 @@ void CFFLuaLib::InitGlobals(lua_State* L)
 		def("CastToDispenser",			&FFLib::CastToDispenser),
 		def("CastToSentrygun",			&FFLib::CastToSentrygun),
 		def("CastToDetpack",			&FFLib::CastToDetpack),
+		def("CastToJumpPad",			&FFLib::CastToJumpPad),
+		def("CastToBuildable",			&FFLib::CastToBuildable),
+		def("CastToProjectile",			&FFLib::CastToProjectile),
 		def("ConsoleToAll",				&FFLib::ConsoleToAll),
 		def("DeleteSchedule",			&FFLib::DeleteSchedule),
 		def("DropToFloor",				&FFLib::DropToFloor),
@@ -3008,6 +3138,7 @@ void CFFLuaLib::InitGlobals(lua_State* L)
 		def("GetEntity",				&FFLib::GetEntity),
 		def("GetEntityByName",			&FFLib::GetEntityByName),
 		def("GetEntitiesByName",		&FFLib::GetEntitiesByName),
+		def("GetEntitiesInSphere",		&FFLib::GetEntitiesInSphere),
 		def("GetInfoScriptById",		&FFLib::GetInfoScriptById),
 		def("GetInfoScriptByName",		&FFLib::GetInfoScriptByName),
 		def("GetGrenade",				&FFLib::GetGrenade),
@@ -3024,16 +3155,23 @@ void CFFLuaLib::InitGlobals(lua_State* L)
 		def("DisableTimeLimit",			(void(*)())&FFLib::DisableTimeLimit),
 		def("DisableTimeLimit",			(void(*)(bool))&FFLib::DisableTimeLimit),
 		def("HasGameStarted",			&FFLib::HasGameStarted),
+		def("ServerCommand",			&FFLib::ServerCommand),
 		def("GoToIntermission",			&FFLib::GoToIntermission),
 		def("IncludeScript",			&FFLib::IncludeScript),
+		def("IsEntity",					&FFLib::IsEntity),
 		def("IsPlayer",					&FFLib::IsPlayer),
 		def("IsDispenser",				&FFLib::IsDispenser),
 		def("IsSentrygun",				&FFLib::IsSentrygun),
 		def("IsDetpack",				&FFLib::IsDetpack),
+		def("IsJumpPad",				&FFLib::IsJumpPad),
+		def("IsBuildable",				&FFLib::IsBuildable),
 		def("IsGrenade",				&FFLib::IsGrenade),
 		def("IsTurret",					&FFLib::IsTurret),
+		def("IsProjectile",				&FFLib::IsProjectile),
+		def("IsInfoScript",				&FFLib::IsInfoScript),
 		//def("KillAndRespawnAllPlayers",	&FFLib::KillAndRespawnAllPlayers),
 		def("NumPlayers",				&FF_NumPlayers),
+		def("GetPlayers",				&FFLib::GetPlayers),
 		def("OutputEvent",				(void(*)(const char*, const char*))&FFLib::FireOutput),
 		def("OutputEvent",				(void(*)(const char*, const char*, const char*))&FFLib::FireOutput),
 		def("OutputEvent",				(void(*)(const char*, const char*, const char*, float))&FFLib::FireOutput),
